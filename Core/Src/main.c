@@ -29,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 arm_rfft_fast_instance_f32 S;
 #include "sound_process.h"
+#include "FIR.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -112,6 +113,7 @@ int main(void)
     MX_SPI4_Init();
     /* USER CODE BEGIN 2 */
     HAL_Delay(50);
+    SIN_screan_gen();
     ST7789_Init(&LCD1);
     arm_rfft_fast_init_f32(&S, I2S_FFT_RESULT_BUF_LEN); //функция инициализации необходима для БФП
     HAL_I2S_Receive_DMA(&hi2s3, (u16*) PCM_rx_buf, I2S_INPUT_RAW_SEMPLS_NUM);
