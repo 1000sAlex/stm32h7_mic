@@ -21,18 +21,19 @@
 #include "main.h"
 #include "dma.h"
 #include "i2s.h"
+#include "spi.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
 arm_rfft_fast_instance_f32 S;
-
+#include "sound_process.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+LCD_str LCD1;
 
 /* USER CODE END PTD */
 
@@ -49,11 +50,6 @@ arm_rfft_fast_instance_f32 S;
 
 /* USER CODE BEGIN PV */
 
-#define I2S_INPUT_RAW_SEMPLS_NUM 256
-s32 PCM_rx_buf[I2S_INPUT_RAW_SEMPLS_NUM];
-float32_t PCM_rx_buf2[I2S_INPUT_RAW_SEMPLS_NUM / 2];
-float32_t decimation_buf[I2S_INPUT_RAW_SEMPLS_NUM / 4];
-float32_t FFT_result[I2S_INPUT_RAW_SEMPLS_NUM / 4];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -62,47 +58,12 @@ void SystemClock_Config(void);
 
 void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s)
     {
-    static u32 button_flag = 0;
-    LD1_GPIO_Port->ODR |= LD1_Pin;
-    for (u32 i = I2S_INPUT_RAW_SEMPLS_NUM / 4; i < I2S_INPUT_RAW_SEMPLS_NUM / 2;
-	    i++)
-	{
-	PCM_rx_buf2[i] = (float) (PCM_rx_buf[i * 2] >> 8);
-	}
-
-    if (((B1_GPIO_Port->IDR & B1_Pin) != 0) && (button_flag == 0))
-	{
-	for (u32 i = 0; i < 64; i++)
-	    {
-	    decimation_buf[i] = (PCM_rx_buf2[i * 2] + PCM_rx_buf2[i * 2 + 1])
-		    / 2;
-	    }
-	arm_rfft_fast_f32(&S, decimation_buf, FFT_result, 0);
-	for (u32 i = 0; i < 64; i++)
-	    {
-	    if (FFT_result[i] > 0)
-		{
-		Uart_IntWrite((s32) (FFT_result[i]));
-		}
-	    else
-		{
-		Uart_IntWrite((s32) (FFT_result[i] * -1));
-		}
-
-	    uart_send_char('\n');
-	    }
-	}
-    button_flag = B1_GPIO_Port->IDR & B1_Pin;
-    LD1_GPIO_Port->ODR &= ~ LD1_Pin;
-    //uart_send_char('\n');
+    i2s_dma_full_Rx();
     }
 
 void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s)
     {
-    for (u32 i = 0; i < I2S_INPUT_RAW_SEMPLS_NUM / 4; i++)
-	{
-	PCM_rx_buf2[i] = (float) (PCM_rx_buf[i * 2] >> 8);
-	}
+    i2s_dma_half_Rx();
     }
 /* USER CODE END PFP */
 
@@ -134,7 +95,13 @@ int main(void)
     SystemClock_Config();
 
     /* USER CODE BEGIN SysInit */
-
+    LCD1.LCD_blk_pin = LCD_BLK_Pin;
+    LCD1.LCD_dc_pin = LCD_DC_Pin;
+    LCD1.LCD_res_pin = LCD_RES_Pin;
+    LCD1.LCD_blk_port = LCD_BLK_GPIO_Port;
+    LCD1.LCD_dc_port = LCD_DC_GPIO_Port;
+    LCD1.LCD_res_port = LCD_RES_GPIO_Port;
+    LCD1.spi_str = &hspi4;
     /* USER CODE END SysInit */
 
     /* Initialize all configured peripherals */
@@ -142,10 +109,14 @@ int main(void)
     MX_DMA_Init();
     MX_I2S3_Init();
     MX_USART3_UART_Init();
+    MX_SPI4_Init();
     /* USER CODE BEGIN 2 */
-    arm_rfft_fast_init_f32(&S, 64); //функция инициализации необходима для БФП
-    HAL_I2S_Receive_DMA(&hi2s3, (u16*) PCM_rx_buf,
-    I2S_INPUT_RAW_SEMPLS_NUM);
+    HAL_Delay(50);
+    ST7789_Init(&LCD1);
+    arm_rfft_fast_init_f32(&S, I2S_FFT_RESULT_BUF_LEN); //функция инициализации необходима для БФП
+    HAL_I2S_Receive_DMA(&hi2s3, (u16*) PCM_rx_buf, I2S_INPUT_RAW_SEMPLS_NUM);
+    ST7789_DrawPixel(4, 5, HSV_to_RGB565(200, 255, 255), &LCD1);
+
     /* USER CODE END 2 */
 
     /* Infinite loop */
@@ -226,8 +197,9 @@ void SystemClock_Config(void)
 	Error_Handler();
 	}
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USART3
-	    | RCC_PERIPHCLK_SPI3;
+	    | RCC_PERIPHCLK_SPI4 | RCC_PERIPHCLK_SPI3;
     PeriphClkInitStruct.Spi123ClockSelection = RCC_SPI123CLKSOURCE_PLL;
+    PeriphClkInitStruct.Spi45ClockSelection = RCC_SPI45CLKSOURCE_D2PCLK1;
     PeriphClkInitStruct.Usart234578ClockSelection =
     RCC_USART234578CLKSOURCE_D2PCLK1;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
