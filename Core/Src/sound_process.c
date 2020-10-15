@@ -11,7 +11,6 @@
 
 extern arm_rfft_fast_instance_f32 S;
 extern LCD_str LCD1;
-extern float screan_buf[];
 
 volatile float mass = 0;
 u16 color[240];
@@ -26,7 +25,7 @@ void LCD(float *data, u8 line)
 	{
 	if (data[i] < 0)
 	    {
-	    data[i] = data[i] * -1.0;
+	    data[i] = 0; // data[i] * -1.0;
 	    }
 	if (data[i] > max_val)
 	    {
@@ -50,8 +49,8 @@ void LCD(float *data, u8 line)
 	}
     static u8 mas_last;
     color[mas_last] = RGB565(0, 0, 0);
-    mas_last = (u8) mass*5;
-    color[(u8) mass*5] = RGB565(0, 255, 0);
+    mas_last = (u8) mass * 5;
+    color[(u8) mass * 5] = RGB565(0, 255, 0);
 
     ST7789_FillLine(line, color, &LCD1);
     }
@@ -61,7 +60,7 @@ void get_firs_half_pcm_data(void)
     //берем каждый второй семпл, так как у нас только левый канал
     for (u32 i = 0; i < I2S_INPUT_RAW_SEMPLS_NUM / 4; i++)
 	{
-	PCM_rx_buf2[i] = fir((float) (PCM_rx_buf[i * 2] >> 8)) * screan_buf[i];
+	PCM_rx_buf2[i] = fir((float) (PCM_rx_buf[i * 2] >> 8));
 	}
     }
 
@@ -71,7 +70,7 @@ void get_second_half_pcm_data(void)
     for (u32 i = I2S_INPUT_RAW_SEMPLS_NUM / 4; i < I2S_INPUT_RAW_SEMPLS_NUM / 2;
 	    i++)
 	{
-	PCM_rx_buf2[i] = fir((float) (PCM_rx_buf[i * 2] >> 8)) * screan_buf[i];
+	PCM_rx_buf2[i] = fir((float) (PCM_rx_buf[i * 2] >> 8));
 	}
     }
 
@@ -83,19 +82,20 @@ void Get_real_fft_result(float *in, float *out)
 	}
     }
 
-void Uart_upd(float *data)
+void Uart_upd(float *data, u32 len)
     {
-    for (u32 i = 0; i < I2S_FFT_RESULT_REAL_BUF_LEN; i++)
+    for (u32 i = 0; i < len; i++)
 	{
 	Uart_IntWrite((s32) (data[i]));
 	uart_send_char('\n');
 	}
     //uart_send_char('\n');
     }
-#define DECIMATION_ORDER 4
-static u8 dec_step = 0;
+#define DECIMATION_ORDER 16
+float downsampling_buf2[128];
 u8 Downsampling(void)
     {
+    static u8 dec_step = 0;
     for (volatile u32 i = 0; i < I2S_DECIMATION_BUF_LEN / DECIMATION_ORDER; i++)
 	{
 	float sum = 0;
@@ -104,6 +104,9 @@ u8 Downsampling(void)
 	    sum = sum + PCM_rx_buf2[i * DECIMATION_ORDER + j];
 	    }
 	downsampling_buf[i
+		+ (dec_step * (I2S_DECIMATION_BUF_LEN / DECIMATION_ORDER))] =
+		sum / DECIMATION_ORDER;
+	downsampling_buf2[i
 		+ (dec_step * (I2S_DECIMATION_BUF_LEN / DECIMATION_ORDER))] =
 		sum / DECIMATION_ORDER;
 	}
@@ -115,6 +118,59 @@ u8 Downsampling(void)
 	}
     return 0;
     }
+
+#define OUT_MAX 1.0
+#define OUT_MIN -1.0
+
+#define COR_LEN 16
+
+float cor[128 - COR_LEN];
+volatile float cor_avg = 0;
+float corelation(float *in)
+    {
+    float in_max = in[0];
+    float in_min = in[0];
+    float val[128];
+
+    for (u32 i = 0; i < 128; i++)
+	{
+	if (in_max < in[i])
+	    {
+	    in_max = in[i];
+	    }
+	if (in_min > in[i])
+	    {
+	    in_min = in[i];
+	    }
+	}
+    for (u32 i = 0; i < 128; i++)
+	{
+	val[i] = (in[i] - in_min) * (OUT_MAX - OUT_MIN)
+		/ (in_max - in_min)+ OUT_MIN;
+	}
+    for (u32 i = COR_LEN; i < 128 - COR_LEN; i++)
+	{
+	float sum = 0;
+	for (u32 j = 0; j < COR_LEN; j++)
+	    {
+	    sum = val[i - COR_LEN + j] * val[i + j];
+	    }
+	cor[i - COR_LEN] = sum * 10;
+	}
+    for (u32 i = 0; i < 128 - COR_LEN; i++)
+	{
+	if (cor[i] > 0.5)
+	    {
+	    cor_avg = cor_avg * (1 - 0.0001) + cor[i] * 0.0001;
+	    }
+	else
+	    {
+	    cor_avg = cor_avg * (1 - 0.0001) - 0.0001;
+	    }
+	}
+    return 0;
+    }
+
 volatile float peak_res = 0;
 void peak_detector(void)
     {
@@ -149,28 +205,60 @@ void LCD_upd(float *data)
 	lcd_line = 0;
 	}
     }
+static u32 button_flag = 0;
+float FFT_result_real_avg[64];
+#define K_AVG 0.0001
+void FFT_res_avg(float *in, float *out)
+    {
+    static u8 first_time_flag = 0;
+    if (first_time_flag < 50)
+	{
+	for (u32 i = 0; i < 64; i++)
+	    {
+	    out[i] = (out[i] * (1 - 0.1)) + (in[i] * 0.1);
+	    }
+	first_time_flag++;
+	}
+    for (u32 i = 0; i < 64; i++)
+	{
+	out[i] = (out[i] * (1 - K_AVG)) + (in[i] * K_AVG);
+	}
+    }
+float dx_data[64];
+void FFT_dx(float *avg, float *new, float *out)
+    {
+    for (u32 i = 0; i < 64; i++)
+	{
+	out[i] = new[i] - avg[i];
+	}
+    }
 
 void i2s_dma_full_Rx(void)
     {
-    static u32 button_flag = 0;
+//static u8 count = 0;
     LD1_GPIO_Port->ODR |= LD1_Pin;
     get_second_half_pcm_data();
+
     if (Downsampling() == 1)
 	{
 	arm_rfft_fast_f32(&S, downsampling_buf, FFT_result, 0);
 	Get_real_fft_result(FFT_result, FFT_result_real);
-	peak_detector();
-	max_power_dot_calc();
-//кнопка
-	if (((B1_GPIO_Port->IDR & B1_Pin) != 0) && (button_flag == 0))
+//	peak_detector();
+//	max_power_dot_calc();
+	FFT_res_avg(FFT_result_real, FFT_result_real_avg);
+	FFT_dx(FFT_result_real_avg, FFT_result_real, dx_data);
+
+	corelation(downsampling_buf2);
+
+	if ((((B1_GPIO_Port->IDR & B1_Pin) == 0) && (button_flag != 0))) //кнопка
+	//|| (count != 4))
 	    {
-	    Uart_upd(downsampling_buf);
-	    }
-	else
-	    {
-	    LCD_upd(FFT_result_real);
+	    Uart_upd(cor, 128 - COR_LEN);
 	    }
 	button_flag = B1_GPIO_Port->IDR & B1_Pin;
+
+	LCD_upd(dx_data);
+
 	}
     LD1_GPIO_Port->ODR &= ~ LD1_Pin;
     }
