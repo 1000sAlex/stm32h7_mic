@@ -8,10 +8,13 @@
 #include "sound_process.h"
 #include "usart.h"
 #include "FIR.h"
+#include "rgb_out.h"
 
 extern arm_rfft_fast_instance_f32 S;
 extern LCD_str LCD1;
+extern RGB_out_str RGB;
 
+volatile float peak_res = 0;
 volatile float mass = 0;
 u16 color[240];
 
@@ -25,7 +28,8 @@ void LCD(float *data, u8 line)
 	{
 	if (data[i] < 0)
 	    {
-	    data[i] = 0; // data[i] * -1.0;
+	    //data[i] = 0;
+	    data[i] = data[i] * -1.0;
 	    }
 	if (data[i] > max_val)
 	    {
@@ -53,6 +57,41 @@ void LCD(float *data, u8 line)
     color[(u8) mass * 5] = RGB565(0, 255, 0);
 
     ST7789_FillLine(line, color, &LCD1);
+    }
+
+#define H_AVG_K 0.01
+#define V_AVG_K 0.001
+void RGB_out_calc(float in)
+    {
+    static u8 firs_time = 0;
+    static float h_offset = 0;
+    static float in_avg = 0;
+    static float h_avg = 0;
+    static float v_avg = 0;
+    if (firs_time < 250)
+	{
+	h_avg = in;
+	firs_time = 255;
+	v_avg = peak_res;
+	}
+    else
+	{
+	firs_time++;
+	}
+    v_avg = v_avg * (1.0 - V_AVG_K) + peak_res * V_AVG_K;
+    in_avg = in_avg * (1.0 - H_AVG_K) + in * H_AVG_K;
+    float h = ((in - in_avg) * 15 + h_offset + 180);
+    h_avg = h_avg * (1.0 - 0.2) + h * 0.2;
+    u16 v = (u16) map(peak_res, 0, v_avg * 2, 0, 255);
+    HSV_to_RGB888((u16) h_avg, 0xFF, 0xFF, &RGB);
+    h_offset += 0.1;
+    if (h_offset >= 360)
+	{
+	h_offset = 0;
+	}
+    RGB_out(&RGB);
+    Uart_IntWrite((s32) h_avg);
+    uart_send_char('\n');
     }
 
 void get_firs_half_pcm_data(void)
@@ -91,7 +130,7 @@ void Uart_upd(float *data, u32 len)
 	}
     //uart_send_char('\n');
     }
-#define DECIMATION_ORDER 16
+#define DECIMATION_ORDER 8
 float downsampling_buf2[128];
 u8 Downsampling(void)
     {
@@ -126,6 +165,7 @@ u8 Downsampling(void)
 
 float cor[128 - COR_LEN];
 volatile float cor_avg = 0;
+volatile float cor_avg2 = 0;
 float corelation(float *in)
     {
     float in_max = in[0];
@@ -153,25 +193,18 @@ float corelation(float *in)
 	float sum = 0;
 	for (u32 j = 0; j < COR_LEN; j++)
 	    {
-	    sum = val[i - COR_LEN + j] * val[i + j];
+	    sum = val[j] * val[i + j];
 	    }
-	cor[i - COR_LEN] = sum * 10;
+	cor[i - COR_LEN] = (sum * sum) * 10;
 	}
     for (u32 i = 0; i < 128 - COR_LEN; i++)
 	{
-	if (cor[i] > 0.5)
-	    {
-	    cor_avg = cor_avg * (1 - 0.0001) + cor[i] * 0.0001;
-	    }
-	else
-	    {
-	    cor_avg = cor_avg * (1 - 0.0001) - 0.0001;
-	    }
+	cor_avg = cor_avg * (1.0 - 0.001) + cor[i] * 0.001;
 	}
+    cor_avg2 = cor_avg2 * (1.0 - 0.001) + cor_avg * 0.001;
     return 0;
     }
 
-volatile float peak_res = 0;
 void peak_detector(void)
     {
     float sum = 0;
@@ -243,21 +276,22 @@ void i2s_dma_full_Rx(void)
 	{
 	arm_rfft_fast_f32(&S, downsampling_buf, FFT_result, 0);
 	Get_real_fft_result(FFT_result, FFT_result_real);
-//	peak_detector();
-//	max_power_dot_calc();
-	FFT_res_avg(FFT_result_real, FFT_result_real_avg);
-	FFT_dx(FFT_result_real_avg, FFT_result_real, dx_data);
+	peak_detector();
+	max_power_dot_calc();
+	RGB_out_calc(mass);
+	//FFT_res_avg(FFT_result_real, FFT_result_real_avg);
+	//FFT_dx(FFT_result_real_avg, FFT_result_real, dx_data);
 
-	corelation(downsampling_buf2);
+	//corelation(downsampling_buf2);
 
 	if ((((B1_GPIO_Port->IDR & B1_Pin) == 0) && (button_flag != 0))) //кнопка
 	//|| (count != 4))
 	    {
-	    Uart_upd(cor, 128 - COR_LEN);
+	    Uart_upd(FFT_result_real, 128);
 	    }
 	button_flag = B1_GPIO_Port->IDR & B1_Pin;
 
-	LCD_upd(dx_data);
+	LCD_upd(FFT_result_real);
 
 	}
     LD1_GPIO_Port->ODR &= ~ LD1_Pin;

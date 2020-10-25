@@ -22,6 +22,7 @@
 #include "dma.h"
 #include "i2s.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -30,11 +31,13 @@
 arm_rfft_fast_instance_f32 S;
 #include "sound_process.h"
 #include "FIR.h"
+#include "rgb_out.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 LCD_str LCD1;
+RGB_out_str RGB;
 
 /* USER CODE END PTD */
 
@@ -103,6 +106,11 @@ int main(void)
     LCD1.LCD_dc_port = LCD_DC_GPIO_Port;
     LCD1.LCD_res_port = LCD_RES_GPIO_Port;
     LCD1.spi_str = &hspi4;
+
+    RGB.r_chan = TIM_CHANNEL_3;
+    RGB.g_chan = TIM_CHANNEL_2;
+    RGB.b_chan = TIM_CHANNEL_4;
+    RGB.tim_str = &htim3;
     /* USER CODE END SysInit */
 
     /* Initialize all configured peripherals */
@@ -111,20 +119,22 @@ int main(void)
     MX_I2S3_Init();
     MX_USART3_UART_Init();
     MX_SPI4_Init();
+    MX_TIM3_Init();
     /* USER CODE BEGIN 2 */
+    RGB_init(&RGB);
     HAL_Delay(50);
     SIN_screan_gen();
     ST7789_Init(&LCD1);
     arm_rfft_fast_init_f32(&S, I2S_FFT_RESULT_BUF_LEN); //функция инициализации необходима для БФП
     HAL_I2S_Receive_DMA(&hi2s3, (u16*) PCM_rx_buf, I2S_INPUT_RAW_SEMPLS_NUM);
     ST7789_DrawPixel(4, 5, HSV_to_RGB565(200, 255, 255), &LCD1);
-
     /* USER CODE END 2 */
 
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
     while (1)
 	{
+
 	/* USER CODE END WHILE */
 
 	/* USER CODE BEGIN 3 */
@@ -203,7 +213,7 @@ void SystemClock_Config(void)
     PeriphClkInitStruct.Spi123ClockSelection = RCC_SPI123CLKSOURCE_PLL;
     PeriphClkInitStruct.Spi45ClockSelection = RCC_SPI45CLKSOURCE_D2PCLK1;
     PeriphClkInitStruct.Usart234578ClockSelection =
-    RCC_USART234578CLKSOURCE_D2PCLK1;
+	    RCC_USART234578CLKSOURCE_D2PCLK1;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
 	{
 	Error_Handler();
