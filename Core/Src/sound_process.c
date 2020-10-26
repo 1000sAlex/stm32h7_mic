@@ -9,10 +9,10 @@
 #include "usart.h"
 #include "FIR.h"
 #include "rgb_out.h"
+#include "rgb_process.h"
 
 extern arm_rfft_fast_instance_f32 S;
 extern LCD_str LCD1;
-extern RGB_out_str RGB;
 
 volatile float peak_res = 0;
 volatile float mass = 0;
@@ -57,41 +57,6 @@ void LCD(float *data, u8 line)
     color[(u8) mass * 5] = RGB565(0, 255, 0);
 
     ST7789_FillLine(line, color, &LCD1);
-    }
-
-#define H_AVG_K 0.01
-#define V_AVG_K 0.001
-void RGB_out_calc(float in)
-    {
-    static u8 firs_time = 0;
-    static float h_offset = 0;
-    static float in_avg = 0;
-    static float h_avg = 0;
-    static float v_avg = 0;
-    if (firs_time < 250)
-	{
-	h_avg = in;
-	firs_time = 255;
-	v_avg = peak_res;
-	}
-    else
-	{
-	firs_time++;
-	}
-    v_avg = v_avg * (1.0 - V_AVG_K) + peak_res * V_AVG_K;
-    in_avg = in_avg * (1.0 - H_AVG_K) + in * H_AVG_K;
-    float h = ((in - in_avg) * 15 + h_offset + 180);
-    h_avg = h_avg * (1.0 - 0.2) + h * 0.2;
-    u16 v = (u16) map(peak_res, 0, v_avg * 2, 0, 255);
-    HSV_to_RGB888((u16) h_avg, 0xFF, 0xFF, &RGB);
-    h_offset += 0.1;
-    if (h_offset >= 360)
-	{
-	h_offset = 0;
-	}
-    RGB_out(&RGB);
-    Uart_IntWrite((s32) h_avg);
-    uart_send_char('\n');
     }
 
 void get_firs_half_pcm_data(void)
@@ -266,6 +231,15 @@ void FFT_dx(float *avg, float *new, float *out)
 	}
     }
 
+void spectrum_avg(float *in, float *out)
+    {
+    for (u32 i = 0; i < 64; i++)
+	{
+	out[i] = avg(out[i], in[i], 0.01);
+	}
+    }
+
+float downsempling_long[2048];
 void i2s_dma_full_Rx(void)
     {
 //static u8 count = 0;
@@ -278,19 +252,37 @@ void i2s_dma_full_Rx(void)
 	Get_real_fft_result(FFT_result, FFT_result_real);
 	peak_detector();
 	max_power_dot_calc();
-	RGB_out_calc(mass);
+	RGB_out_calc(mass, peak_res);
 	//FFT_res_avg(FFT_result_real, FFT_result_real_avg);
 	//FFT_dx(FFT_result_real_avg, FFT_result_real, dx_data);
-
+	spectrum_avg(FFT_result_real,FFT_result_real_avg);
 	//corelation(downsampling_buf2);
-
+	static u8 count = 0;
+	static u8 adder = 0;
 	if ((((B1_GPIO_Port->IDR & B1_Pin) == 0) && (button_flag != 0))) //кнопка
 	//|| (count != 4))
 	    {
-	    Uart_upd(FFT_result_real, 128);
+	    adder = 1;
 	    }
 	button_flag = B1_GPIO_Port->IDR & B1_Pin;
-
+	if (adder != 0)
+	    {
+	    if ((count >= 50) && (count < 66))
+		{
+		for (u32 i = 0; i < 128; i++)
+		    {
+		    downsempling_long[(count - 50) * 128 + i] =
+			    downsampling_buf2[i];
+		    }
+		}
+	    count = count + adder;
+	    }
+	if (count == 100)
+	    {
+	    count = 0;
+	    adder = 0;
+	    Uart_upd(FFT_result_real_avg, 64);
+	    }
 	LCD_upd(FFT_result_real);
 
 	}
